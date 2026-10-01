@@ -17,11 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 
 # Defaults
-DEFAULT_AM_PRIMARY = "https://9r.zallpyx.xyz/am"
-DEFAULT_KEY_PRIMARY = "am-sk-5629aab35ba7488f3432d0ba0fe47a63"
-
-DEFAULT_AM_FALLBACK = "https://v.axjet.xyz"
-DEFAULT_KEY_FALLBACK = "am-sk-29bf295c45cddff5cbb0c31e143b4feb"
+DEFAULT_AM_PRIMARY = "https://v.axjet.xyz"
+DEFAULT_KEY_PRIMARY = "am-sk-29bf295c45cddff5cbb0c31e143b4feb"
 
 DEFAULT_RZMAIL_BASE = "https://rzmail.my.id"
 
@@ -112,8 +109,6 @@ def activate_one_account(worker_id: int, gateway: str, api_key: str, rzmail_base
 
     send_ok = False
     candidates = [(active_gw, active_key)]
-    if active_gw == DEFAULT_AM_PRIMARY:
-        candidates.append((DEFAULT_AM_FALLBACK, DEFAULT_KEY_FALLBACK))
 
     for gw, k in candidates:
         try:

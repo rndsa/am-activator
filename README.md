@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
 [![Runtime](https://img.shields.io/badge/runtime-Pterodactyl_Container-007acc?style=flat-square)](https://pterodactyl.io)
-[![Protocol](https://img.shields.io/badge/protocol-REST_API-green?style=flat-square)](https://9r.zallpyx.xyz/am)
+[![Protocol](https://img.shields.io/badge/protocol-REST_API-green?style=flat-square)](https://v.axjet.xyz)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
 High-performance, parallel automated provisioning engine for Alight Motion accounts. Supports connection pooling, sub-second mailbox polling via RZero Mail, dynamic live hot-reloading, and failover gateway routing.
@@ -22,11 +22,11 @@ High-performance, parallel automated provisioning engine for Alight Motion accou
               ▼                                               ▼
 ┌───────────────────────────┐                   ┌───────────────────────────┐
 │     RZero Mail Engine     │                   │     AM Reverse Gateway    │
-│       (rzmail.my.id)      │                   │     (9r.zallpyx.xyz/am)   │
+│       (rzmail.my.id)      │                   │       (v.axjet.xyz)       │
 ├───────────────────────────┤                   ├───────────────────────────┤
 │ • GET /api/create         │                   │ • POST /api/send-link     │
 │ • GET /api/messages/:mail │                   │ • POST /api/verify-link   │
-│ • Magic link extraction   │                   │ • Auto-fallback routing   │
+│ • Magic link extraction   │                   │ • Sub-second provisioning │
 └───────────────────────────┘                   └───────────────────────────┘
 ```
 
@@ -87,8 +87,8 @@ Contoh konfigurasi standar:
   "delay_seconds": 0.2,
   "poll_interval": 0.6,
   "target_count": 0,
-  "am_gateway": "https://9r.zallpyx.xyz/am",
-  "am_api_key": "am-sk-5629aab35ba7488f3432d0ba0fe47a63",
+  "am_gateway": "https://v.axjet.xyz",
+  "am_api_key": "am-sk-29bf295c45cddff5cbb0c31e143b4feb",
   "rzmail_api_url": "https://rzmail.my.id"
 }
 ```
@@ -101,7 +101,7 @@ Contoh konfigurasi standar:
 | `delay_seconds` | float | `0.2` | Jeda waktu dispatch antar task worker (detik) |
 | `poll_interval` | float | `0.6` | Frekuensi interval pengecekan email masuk (detik) |
 | `target_count` | integer | `0` | Target total akun (`0` = berjalan terus tanpa batas) |
-| `am_gateway` | string | `https://9r.zallpyx.xyz/am` | URL endpoint reverse gateway Alight Motion |
+| `am_gateway` | string | `https://v.axjet.xyz` | URL endpoint reverse gateway Alight Motion |
 | `am_api_key` | string | `am-sk-...` | API Key autentikasi untuk reverse gateway |
 | `rzmail_api_url` | string | `https://rzmail.my.id` | Base URL endpoint service RZero Mail |
 
