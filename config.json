@@ -1,0 +1,9 @@
+{
+  "concurrency": 8,
+  "delay_seconds": 0.2,
+  "poll_interval": 0.6,
+  "target_count": 0,
+  "am_gateway": "https://9r.zallpyx.xyz/am",
+  "am_api_key": "am-sk-5629aab35ba7488f3432d0ba0fe47a63",
+  "rzmail_api_url": "https://rzmail.my.id"
+}
