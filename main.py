@@ -1,91 +1,109 @@
 #!/usr/bin/env python3
 """
-AM Auto-Activator — Unlimited / Turbo Mode with Dynamic Config Hot-Reload
+AM Auto-Activator — Unlimited / Turbo Mode with Dynamic Config Hot-Reload & Circuit Breaker
 Pipeline: rzmail (create) -> AM Gateway (send-link) -> rzmail (poll) -> AM Gateway (verify-link)
-Optimized for Pterodactyl container & CLI execution.
+Optimized for high-throughput unattended daemon mode in Pterodactyl container.
 """
 
 import sys
 import os
 import time
-import json
 import re
-import argparse
-import requests
-from datetime import datetime
+import json
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from threading import Lock
 
 # Defaults
 DEFAULT_AM_PRIMARY = "https://v.axjet.xyz"
 DEFAULT_KEY_PRIMARY = "am-sk-29bf295c45cddff5cbb0c31e143b4feb"
-
 DEFAULT_RZMAIL_BASE = "https://rzmail.my.id"
 
-# Paths
-CONTAINER_DIR = "/home/container"
-BASE_DIR = CONTAINER_DIR if os.path.exists(CONTAINER_DIR) else "."
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_FILE = os.path.join(SCRIPT_DIR, "am_accounts.txt")
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
 
-OUTPUT_FILE = os.path.join(BASE_DIR, "am_accounts.txt")
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+# High-performance Session Factory with large connection pool
+def create_session():
+    session = requests.Session()
+    retries = Retry(
+        total=2,
+        backoff_factor=0.2,
+        status_forcelist=[502, 503, 504],
+        raise_on_status=False
+    )
+    adapter = HTTPAdapter(
+        max_retries=retries,
+        pool_connections=50,
+        pool_maxsize=100
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
 
-DEFAULT_CONFIG = {
-    "concurrency": 8,
-    "delay_seconds": 0.2,
-    "poll_interval": 0.6,
-    "target_count": 0,
-    "am_gateway": DEFAULT_AM_PRIMARY,
-    "am_api_key": DEFAULT_KEY_PRIMARY,
-    "rzmail_api_url": DEFAULT_RZMAIL_BASE
-}
+session = create_session()
 
+# Thread-safe stats & circuit breaker
 data_lock = Lock()
+circuit_breaker_lock = Lock()
+circuit_breaker_until = 0.0
 
 stats = {
-    "total_target": 0,
     "success": 0,
     "failed": 0,
     "start_time": time.time(),
     "accounts": []
 }
 
-session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(pool_connections=50, pool_maxsize=100, max_retries=2)
-session.mount("https://", adapter)
-session.mount("http://", adapter)
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    "Accept": "application/json"
-})
+def log_event(text):
+    now = datetime.now().strftime("%H:%M:%S")
+    line = f"[{now}] {text}"
+    print(line, flush=True)
 
-def log_event(msg: str):
-    ts = datetime.now().strftime("%H:%M:%S")
-    print(f"[{ts}] {msg}", flush=True)
-
-def load_live_config() -> dict:
-    cfg = DEFAULT_CONFIG.copy()
+def load_live_config():
+    """Read config.json dynamically with graceful fallback."""
+    defaults = {
+        "concurrency": 8,
+        "delay_seconds": 0.2,
+        "poll_interval": 0.6,
+        "target_count": 0,
+        "am_gateway": DEFAULT_AM_PRIMARY,
+        "am_api_key": DEFAULT_KEY_PRIMARY,
+        "rzmail_api_url": DEFAULT_RZMAIL_BASE
+    }
     if not os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(DEFAULT_CONFIG, f, indent=2)
-        except Exception:
-            pass
-        return cfg
+        return defaults
     try:
         with open(CONFIG_FILE, "r") as f:
-            user_data = json.load(f)
-            if isinstance(user_data, dict):
-                cfg.update(user_data)
+            data = json.load(f)
+            return {
+                "concurrency": max(1, min(30, int(data.get("concurrency", 8)))),
+                "delay_seconds": max(0.0, float(data.get("delay_seconds", 0.2))),
+                "poll_interval": max(0.3, float(data.get("poll_interval", 0.6))),
+                "target_count": int(data.get("target_count", 0)),
+                "am_gateway": str(data.get("am_gateway", DEFAULT_AM_PRIMARY)).strip() or DEFAULT_AM_PRIMARY,
+                "am_api_key": str(data.get("am_api_key", DEFAULT_KEY_PRIMARY)).strip() or DEFAULT_KEY_PRIMARY,
+                "rzmail_api_url": str(data.get("rzmail_api_url", DEFAULT_RZMAIL_BASE)).strip() or DEFAULT_RZMAIL_BASE
+            }
     except Exception:
-        pass
-    return cfg
+        return defaults
 
-def activate_one_account(worker_id: int, gateway: str, api_key: str, rzmail_base: str, poll_interval: float) -> bool:
-    t0 = time.time()
-    tag = f"[#{worker_id:04d}]"
-    rzmail_url = rzmail_base.rstrip("/")
-    
-    # 1. Create inbox rzmail
+def activate_one_account(worker_idx, gateway, api_key, rzmail_url, poll_interval):
+    """Execute single flow: tempmail -> send link -> fetch magic link -> verify pro."""
+    global circuit_breaker_until
+    tag = f"[#{worker_idx:05d}]"
+    start_time = time.time()
+
+    # Pre-check circuit breaker
+    with circuit_breaker_lock:
+        if time.time() < circuit_breaker_until:
+            return False
+
+    # 1. Create temporary mailbox
     try:
         r = session.get(f"{rzmail_url}/api/create", timeout=12)
         inbox = r.json()
@@ -109,6 +127,7 @@ def activate_one_account(worker_id: int, gateway: str, api_key: str, rzmail_base
 
     send_ok = False
     candidates = [(active_gw, active_key)]
+    err_msg = ""
 
     for gw, k in candidates:
         try:
@@ -124,11 +143,32 @@ def activate_one_account(worker_id: int, gateway: str, api_key: str, rzmail_base
                 active_gw = gw
                 active_key = k
                 break
-        except Exception:
+            else:
+                err_msg = res.get("message") or res.get("code") or r.text
+        except Exception as e:
+            err_msg = str(e)
             continue
 
     if not send_ok:
-        log_event(f"{tag} ❌ Gagal send-link (gateway reject: {active_gw})")
+        err_lower = err_msg.lower()
+        is_quota = "quota" in err_lower or "exceeded" in err_lower
+        is_ratelimit = "too_many_attempts" in err_lower or "terlalu banyak" in err_lower
+
+        if is_quota:
+            log_event(f"{tag} ❌ Gateway reject ({active_gw}): QUOTA EXCEEDED (Limit harian Firebase upstream habis)")
+            with circuit_breaker_lock:
+                if time.time() >= circuit_breaker_until:
+                    circuit_breaker_until = time.time() + 60
+                    log_event("⚠️  [CIRCUIT BREAKER] Kuota harian Firebase habis (25.000 email/hari). Cooling down 60s...")
+        elif is_ratelimit:
+            log_event(f"{tag} ❌ Gateway reject ({active_gw}): Rate limited upstream. Cooldown 15s...")
+            with circuit_breaker_lock:
+                if time.time() >= circuit_breaker_until:
+                    circuit_breaker_until = time.time() + 15
+        else:
+            clean_err = err_msg[:75] if err_msg else "Unknown rejection"
+            log_event(f"{tag} ❌ Gagal send-link: {clean_err}")
+
         with data_lock:
             stats["failed"] += 1
         return False
@@ -167,16 +207,17 @@ def activate_one_account(worker_id: int, gateway: str, api_key: str, rzmail_base
     try:
         r = session.post(
             f"{active_gw}/api/verify-link",
-            json={"email": email, "magicLink": found_link},
+            json={"email": email, "link": found_link},
             headers={"Content-Type": "application/json", "x-api-key": active_key},
             timeout=25
         )
         res = r.json()
-        if res.get("success"):
+        dur = round(time.time() - start_time, 1)
+
+        if r.status_code == 200 and res.get("success"):
             dt = res.get("data", {})
-            dur = round(time.time() - t0, 1)
             uid = dt.get("uid", "-")
-            membership = dt.get("membershipStatus", "PREMIUM_ACTIVE")
+            membership = dt.get("membership", "ACTIVE")
             valid_until = dt.get("validUntil", "-")
 
             with data_lock:
@@ -267,9 +308,16 @@ def main():
                 log_event(f"🎯 Target {target_count} akun telah tercapai!")
                 break
 
+            # Handle Circuit Breaker pause
+            if time.time() < circuit_breaker_until:
+                time.sleep(1.0)
+                continue
+
             # Fill up workers up to concurrency
             while len(active_futures) < concurrency:
                 if target_count > 0 and (worker_counter >= target_count or stats["success"] >= target_count):
+                    break
+                if time.time() < circuit_breaker_until:
                     break
                 worker_counter += 1
                 fut = executor.submit(activate_one_account, worker_counter, am_gw, am_key, rz_url, poll_interval)
